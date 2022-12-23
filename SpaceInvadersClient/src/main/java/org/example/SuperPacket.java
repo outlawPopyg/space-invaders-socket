@@ -192,22 +192,6 @@ public class SuperPacket {
         }
     }
 
-    public Class getClass(int id) {
-
-        if (type != 2) {
-            throw new IllegalArgumentException("There's no aClass field in meta type packets");
-        }
-
-        SuperField field = getField(id);
-        try (ByteArrayInputStream bis = new ByteArrayInputStream(field.getAClass());
-             ObjectInputStream ois = new ObjectInputStream(bis)) {
-
-            return (Class) ois.readObject();
-
-        } catch (IOException | ClassNotFoundException e) {
-            throw new IllegalArgumentException(e);
-        }
-    }
 
     public void setValue(int id, Object value) {
         SuperField field;
@@ -256,29 +240,6 @@ public class SuperPacket {
 
         if (!isAlreadyExists) {
             getSuperFields().add(field);
-        }
-    }
-
-    public void setValue(int id, Object value, Class aClass) {
-        if (type != 2 && type != 3) {
-            throw new IllegalArgumentException("use setValue(int, Object) for meta types");
-        }
-
-        setValue(id, value);
-        SuperField field = getField(id);
-
-        try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            ObjectOutputStream oos = new ObjectOutputStream(bos)) {
-
-            oos.writeObject(aClass);
-            byte[] aClassArray = bos.toByteArray();
-            byte aClassSize = (byte) aClassArray.length;
-
-            field.setaClassSize(aClassSize);
-            field.setaClass(aClassArray);
-
-        } catch (IOException e) {
-            throw new IllegalArgumentException(e);
         }
     }
 

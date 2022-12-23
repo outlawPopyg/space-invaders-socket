@@ -2,22 +2,30 @@ package org.example;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.image.Image;
+import javafx.scene.input.KeyCode;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.ImagePattern;
-import javafx.scene.paint.Paint;
 import javafx.scene.shape.Rectangle;
 import javafx.stage.Stage;
 
-import java.util.LinkedList;
+import java.io.*;
+import java.net.Socket;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-
 public class SpaceInvadersApp extends Application {
+
+    private InputStream in;
+    private OutputStream out;
+    private final String HOST = "localhost";
+    private final int PORT = 4444;
 
     private final Pane root = new Pane();
 
@@ -26,14 +34,21 @@ public class SpaceInvadersApp extends Application {
     private int enemiesCount;
 
     private final Sprite player = new Sprite(300, 750, 40, 40, "player", Color.BLUE);
+    private final Sprite coPlayer = new Sprite(300, 750, 40, 40, "player", Color.RED);
 
+    private boolean isPlay = false;
+    private String sessionId;
     private Parent createContent() {
         root.setPrefSize(600, 800);
 
-        Image image = new Image("gamer.png");
-        player.setFill(new ImagePattern(image));
+        Image playerImage = new Image("gamer.png");
+        player.setFill(new ImagePattern(playerImage));
+
+        Image coPlayerImage = new Image("coPlayer.png");
+        coPlayer.setFill(new ImagePattern(coPlayerImage));
 
         root.getChildren().add(player);
+        root.getChildren().add(coPlayer);
 
         AnimationTimer timer = new AnimationTimer() {
             @Override
@@ -67,57 +82,75 @@ public class SpaceInvadersApp extends Application {
 
     private void update() {
 
-        if (enemiesCount == 0) {
-            nextLevel();
-        }
+        if (isPlay) {
 
-        t += 0.016;
-
-        sprites().forEach(s -> {
-            switch (s.type) {
-
-                case "enemybullet":
-                    s.moveDown();
-
-                    if (s.getBoundsInParent().intersects(player.getBoundsInParent())) {
-                        player.dead = true;
-                        s.dead = true;
-                    }
-                    break;
-
-                case "playerbullet":
-                    s.moveUp();
-
-                    sprites().stream().filter(e -> e.type.equals("enemy")).forEach(enemy -> {
-                        if (s.getBoundsInParent().intersects(enemy.getBoundsInParent())) {
-                            enemy.dead = true;
-                            s.dead = true;
-
-                            enemiesCount--;
-                        }
-                    });
-
-                    break;
-
-                case "enemy":
-
-                    if (t > 2) {
-                        if (Math.random() < 0.3) {
-                            shoot(s);
-                        }
-                    }
-
-                    break;
+            if (enemiesCount == 0) {
+                nextLevel();
             }
-        });
 
-        root.getChildren().removeIf(n -> {
-            Sprite s = (Sprite) n;
-            return s.dead;
-        });
+            t += 0.016;
 
-        if (t > 2) {
-            t = 0;
+            AtomicInteger i = new AtomicInteger(0);
+            sprites().forEach(s -> {
+                switch (s.type) {
+
+                    case "enemybullet":
+                        s.moveDown();
+
+                        if (s.getBoundsInParent().intersects(player.getBoundsInParent())) {
+                            player.dead = true;
+                            s.dead = true;
+                        }
+
+                        if (s.getBoundsInParent().intersects(coPlayer.getBoundsInParent())) {
+                            coPlayer.dead = true;
+                            s.dead = true;
+                        }
+                        break;
+
+                    case "playerbullet":
+                        s.moveUp();
+
+                        sprites().stream().filter(e -> e.type.equals("enemy")).forEach(enemy -> {
+                            if (s.getBoundsInParent().intersects(enemy.getBoundsInParent())) {
+                                enemy.dead = true;
+                                s.dead = true;
+
+                                enemiesCount--;
+                            }
+                        });
+
+                        break;
+
+                    case "enemy":
+                        if (t > 2) {
+                            if (Math.random() < 0.3) {
+                                try {
+                                    SuperPacket enemyBulletPacket = SuperPacket.create(8);
+                                    enemyBulletPacket.setValue(1, sessionId);
+                                    enemyBulletPacket.setValue(2, i.get());
+
+                                    out.write(enemyBulletPacket.toByteArray());
+                                    out.flush();
+                                } catch (IOException e) {
+                                    throw new IllegalArgumentException(e);
+                                }
+                            }
+                        }
+
+                        break;
+                }
+                i.incrementAndGet();
+            });
+
+            root.getChildren().removeIf(n -> {
+                Sprite s = (Sprite) n;
+                return s.dead;
+            });
+
+            if (t > 2) {
+                t = 0;
+            }
         }
     }
 
@@ -130,20 +163,98 @@ public class SpaceInvadersApp extends Application {
 
     @Override
     public void start(Stage stage) throws Exception {
+
         Scene scene = new Scene(createContent());
         scene.setFill(new ImagePattern(new Image("space.jpg")));
+        sessionId = UUID.randomUUID().toString().substring(0,7);
+        System.out.println("[Client#" + sessionId + "]: created");
+
+        Socket socket = new Socket(HOST, PORT);
+
+        in = socket.getInputStream();
+        out = socket.getOutputStream();
+
+        new Thread(() -> {
+            try {
+                while (true) {
+                    byte[] serverResponse = readInput(in);
+
+                    if (serverResponse == null) break;
+
+                    Platform.runLater(() -> {
+                        SuperPacket packet = SuperPacket.parse(serverResponse);
+
+                        if (packet.getType() == 1) {
+                            isPlay = true;
+                        }
+
+                        if (packet.getType() == 8) {
+                            int i = packet.getValue(2, Integer.class);
+                            shoot(sprites().get(i));
+                        }
+
+                        if (packet.getType() != 1 && packet.getType() != 8 && !packet.getValue(1, String.class).contains(sessionId)) {
+
+                            if (packet.getType() == 5) {
+                                coPlayer.moveLeft();
+                            } else if (packet.getType() == 6) {
+                                coPlayer.moveRight();
+                            } else if (packet.getType() == 7) {
+                                shoot(coPlayer);
+                            }
+                        }
+                    });
+
+                }
+
+            } catch (IOException e) {
+                throw new IllegalArgumentException(e);
+            } finally {
+                try {
+                    in.close();
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }).start();
 
         scene.setOnKeyPressed(e -> {
-            switch (e.getCode()) {
-                case A:
+            try {
+                KeyCode keyCode = e.getCode();
+                if (keyCode.equals(KeyCode.A)) {
                     player.moveLeft();
-                    break;
-                case D:
+
+                    SuperPacket moveLeftPacket = SuperPacket.create(5);
+                    moveLeftPacket.setValue(1, sessionId);
+
+                    out.write(moveLeftPacket.toByteArray());
+                    out.flush();
+                } else if (keyCode.equals(KeyCode.D)) {
                     player.moveRight();
-                    break;
-                case SPACE:
+
+                    SuperPacket moveRightPacket = SuperPacket.create(6);
+                    moveRightPacket.setValue(1, sessionId);
+
+                    out.write(moveRightPacket.toByteArray());
+                    out.flush();
+                } else if (keyCode.equals(KeyCode.SPACE)) {
                     shoot(player);
-                    break;
+
+                    SuperPacket shootPacket = SuperPacket.create(7);
+                    shootPacket.setValue(1, sessionId);
+
+                    out.write(shootPacket.toByteArray());
+                    out.flush();
+                } else if (keyCode.equals(KeyCode.ESCAPE)) {
+                    try {
+                        socket.close();
+                        System.exit(0);
+                    } catch (IOException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+            } catch (IOException exception) {
+                throw new IllegalArgumentException(exception);
             }
         });
 
@@ -180,7 +291,34 @@ public class SpaceInvadersApp extends Application {
         }
     }
 
-    public static void main(String[] args) {
+    private byte[] extendArray(byte[] oldArray) {
+        int oldSize = oldArray.length;
+        byte[] newArray = new byte[oldSize * 2];
+        System.arraycopy(oldArray, 0, newArray, 0, oldSize);
+        return newArray;
+    }
+
+    private byte[] readInput(InputStream stream) throws IOException {
+        int b;
+        byte[] buffer = new byte[10];
+        int counter = 0;
+        while ((b = stream.read()) > -1) {
+            buffer[counter++] = (byte) b;
+            if (counter >= buffer.length) {
+                buffer = extendArray(buffer);
+            }
+            if (counter > 2 && SuperPacket.compareEndOfPacket(buffer, counter - 1)) {
+                break;
+            }
+        }
+        byte[] data = new byte[counter];
+        System.arraycopy(buffer, 0, data, 0, counter);
+        return data;
+    }
+
+    public static void main(String[] args) throws IOException {
         launch(args);
     }
+
+
 }

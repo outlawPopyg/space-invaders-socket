@@ -1,4 +1,5 @@
 org\example\SpaceInvadersApp$Sprite.class
 org\example\SpaceInvadersApp.class
+org\example\SuperPacket$SuperField.class
 org\example\SpaceInvadersApp$1.class
-org\example\SpaceInvadersApp$2.class
+org\example\SuperPacket.class
